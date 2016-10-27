@@ -944,6 +944,9 @@ class HS2Session(ThriftRPC):
 
         ThriftRPC.__init__(self, self.service.client, retries=retries)
 
+    def __del__(self):
+        self.close()
+
     def close(self):
         req = TCloseSessionReq(sessionHandle=self.handle)
         self._rpc('CloseSession', req)
