@@ -76,7 +76,7 @@ class HiveServer2Connection(Connection):
         # PEP 249
         raise NotSupportedError
 
-    def cursor(self, user=None, configuration=None, convert_types=True, 
+    def cursor(self, user=None, configuration=None, convert_types=False, 
                dictify=False, fetch_error=True):
         """Get a cursor from the HiveServer2 (HS2) connection.
 
