@@ -76,8 +76,8 @@ class HiveServer2Connection(Connection):
         # PEP 249
         raise NotSupportedError
 
-    def cursor(self, user=None, configuration=None, convert_types=True, 
-               dictify=False, fetch_error=True):
+    def cursor(self, user=None, configuration=None, convert_types=False,
+               batch_cursor=False, dictify=False, fetch_error=True):
         """Get a cursor from the HiveServer2 (HS2) connection.
 
         Parameters
@@ -88,20 +88,25 @@ class HiveServer2Connection(Connection):
         convert_types : bool, optional
             When `False`, timestamps and decimal values will not be converted
             to Python `datetime` and `Decimal` values. (These conversions are
-            expensive.)
+            expensive.) Only applies to HS2 protocol versions <6
+        dictify : bool, optional
+            When `True` cursor will return key value pairs instead of rows.
+        batch_cursor : bool, optional
+            When `True` cursor will return CBatches directly rather than rows. 
         fetch_error : bool, optional
             In versions of impala prior to 2.7.0, when an operation fails and 
             the impalad returns an error state, the error message is not always
             returned. In these cases the error message can be retrieved by a 
-            subsequent fetch call but this has the side effect of invalidating 
-            the query handle and  causing any further on the current query to 
-            functions like log or profile to cause an exception. 
+            subsequent fetch rpc call but this has a side effect of invalidating
+            the query handle and causing any further operations against it to 
+            fail. e.g. calling log() or profile(). 
+
             When set to `True` impyla will attempt to fetch the error message. 
             When set to `False`, this flag will cause impyla not to attempt to
-            fetch the message and the query handle. In this case the query 
+            fetch the message with a fetch call . In this case the query 
             handle remains valid and impyla will raise an exception with a 
-            message of "Operation is in ERROR_STATE". The Default option
-            is `True`.
+            message of "Operation is in ERROR_STATE". 
+            The Default option is `True`.
 
         Returns
         -------
@@ -123,7 +128,12 @@ class HiveServer2Connection(Connection):
                   self.service, session.handle,
                   session.config, session.hs2_protocol_version)
 
-        cursor_class = HiveServer2DictCursor if dictify else HiveServer2Cursor
+        if batch_cursor:
+            cursor_class = HiveServer2BatchCursor
+        elif dictify:
+            cursor_class = HiveServer2DictCursor
+        else:
+            cursor_class = HiveServer2Cursor
 
         cursor = cursor_class(session, convert_types=convert_types,
                               fetch_error=fetch_error)
@@ -335,8 +345,8 @@ class HiveServer2Cursor(Cursor):
 
     def _wait_to_finish(self):
         # Prior to IMPALA-1633 GetOperationStatus does not populate errorMessage
-        # in case of failure. If not populated queries that return results
-        # can get a failure description witha further call to FetchResults rpc.
+        # in case of failure. If not populated, queries that return results
+        # can get a failure description with a further call to FetchResults rpc.
         loop_start = time.time()
         while True:
             req = TGetOperationStatusReq(operationHandle=self._last_operation.handle)
@@ -483,7 +493,8 @@ class HiveServer2Cursor(Cursor):
             log.debug('__next__: buffer empty and op is active => fetching '
                       'more data')
             self._buffer = self._last_operation.fetch(self.description,
-                                                      self.buffersize)
+                                                      self.buffersize,
+                                              convert_types=self.convert_types)
             if len(self._buffer) == 0:
                 log.debug('__next__: no more data to fetch')
                 raise StopIteration
@@ -590,6 +601,29 @@ class HiveServer2DictCursor(HiveServer2Cursor):
         record = super(self.__class__, self).__next__()
         return dict(zip(self.fields, record))
 
+class HiveServer2BatchCursor(HiveServer2Cursor):
+    """cursor that returns a batch of rows rather than individual rows""" 
+    def __next__(self):
+        if not self._last_operation.is_columnar:
+            raise NotSupportedError("Server does not support columnar "
+                                    "fetching")
+        if not self.has_result_set:
+            raise ProgrammingError(
+                "Trying to fetch results on an operation with no results.")
+        if self._last_operation_active:
+            log.debug('__next__: buffer empty and op is active => fetching '
+                      'more data')
+            batch = self._last_operation.fetch(self.description,
+                                               self.buffersize,
+                                               convert_types=self.convert_types)
+            if len(batch) == 0:
+                log.debug('__next__: no more data to fetch')
+                raise StopIteration
+            log.debug('__next__: popping row out of buffer')
+            return batch
+        else:
+            log.debug('__next__: buffer empty')
+            raise StopIteration
 
 # This work builds off of:
 # 1. the Hue interface:
