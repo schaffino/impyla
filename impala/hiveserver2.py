@@ -93,15 +93,16 @@ class HiveServer2Connection(Connection):
             In versions of impala prior to 2.7.0, when an operation fails and 
             the impalad returns an error state, the error message is not always
             returned. In these cases the error message can be retrieved by a 
-            subsequent fetch call but this has the side effect of invalidating 
-            the query handle and  causing any further on the current query to 
-            functions like log or profile to cause an exception. 
+            subsequent fetch rpc call but this has a side effect of invalidating
+            the query handle and causing any further operations against it to 
+            fail. e.g. calling log() or profile(). 
+
             When set to `True` impyla will attempt to fetch the error message. 
             When set to `False`, this flag will cause impyla not to attempt to
-            fetch the message and the query handle. In this case the query 
+            fetch the message with a fetch call . In this case the query 
             handle remains valid and impyla will raise an exception with a 
-            message of "Operation is in ERROR_STATE". The Default option
-            is `True`.
+            message of "Operation is in ERROR_STATE". 
+            The Default option is `True`.
 
         Returns
         -------
@@ -335,8 +336,8 @@ class HiveServer2Cursor(Cursor):
 
     def _wait_to_finish(self):
         # Prior to IMPALA-1633 GetOperationStatus does not populate errorMessage
-        # in case of failure. If not populated queries that return results
-        # can get a failure description witha further call to FetchResults rpc.
+        # in case of failure. If not populated, queries that return results
+        # can get a failure description with a further call to FetchResults rpc.
         loop_start = time.time()
         while True:
             req = TGetOperationStatusReq(operationHandle=self._last_operation.handle)
